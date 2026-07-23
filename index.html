@@ -12,16 +12,17 @@
 
   <h1>Kréyòl gwiyanè</h1>
   <p class="intro">
-    Nous rassemblons des phrases traduites en créole guyanais pour apprendre la langue à un ordinateur.<br>
-    Vous traduisez des phrases du français vers le créole, à votre rythme, comme vous les diriez vraiment.<br>
-    Vous pouvez fermer la page et revenir plus tard : rien n'est perdu.
+    L'ordinateur a préparé des phrases en créole guyanais. Votre rôle : dire si c'est <strong>bon</strong>,
+    <strong>faux</strong>, ou le <strong>corriger</strong> — pour améliorer la langue qu'on lui apprend.<br>
+    À votre rythme, comme vous le diriez vraiment. Vous pouvez fermer la page et revenir plus tard : rien n'est perdu.
   </p>
 
   <!-- Reprise : un participant est déjà enregistré sur cet appareil -->
   <section id="ecran-reprise" class="card" hidden>
     <h2>Bon retour, <span id="reprise-nom"></span> !</h2>
     <p class="intro" style="margin-bottom:1rem">Vous êtes connecté avec le code <strong id="reprise-code"></strong>.</p>
-    <a class="btn btn-primaire" href="collecte.html">Continuer la traduction</a>
+    <a class="btn btn-primaire" href="valide.html">Vérifier &amp; améliorer les phrases</a>
+    <a class="btn" href="collecte.html" style="margin-top:.7rem">Traduire de nouvelles phrases</a>
     <div class="actions-bas">
       <button type="button" class="btn-lien" id="btn-autre">Ce n'est pas moi, changer de code</button>
     </div>
@@ -155,7 +156,7 @@
 
   function entrer(p) {
     enregistrerParticipant(p);
-    location.href = "collecte.html";
+    location.href = "valide.html";
   }
 
   // Le profil n'est demandé que si l'âge est encore vide en base.
