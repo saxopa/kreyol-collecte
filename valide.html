@@ -52,13 +52,13 @@
 
     <!-- Zone de correction (cachée par défaut) -->
     <div id="zone-correction" hidden>
-      <label for="correction">Écris la bonne version en créole :</label>
+      <label for="correction">✏️ Écris <strong>ici</strong> la bonne version en créole (remplace le texte proposé) :</label>
       <textarea id="correction" rows="2"></textarea>
       <button type="button" class="btn btn-primaire" id="btn-valider-correction">Valider ma correction</button>
     </div>
 
-    <label for="note" class="label-note">Une remarque ? (facultatif)</label>
-    <textarea id="note" rows="1" placeholder="ex. on dit aussi…, ça c'est plutôt les anciens"></textarea>
+    <label for="note" class="label-note">Un commentaire en plus ? (facultatif — ce n'est pas ici qu'on corrige)</label>
+    <textarea id="note" rows="1" placeholder="ex. on dit aussi…, ça se dit surtout chez les anciens"></textarea>
 
     <div class="actions-bas">
       <button type="button" class="btn-lien" id="btn-precedent">← Revenir en arrière</button>
@@ -211,6 +211,7 @@
       if (v === "corrige") {
         $("zone-correction").hidden = false;
         $("correction").focus();
+        $("correction").select();   // texte surligné : taper remplace directement la proposition
       } else {
         enregistrer(v, null);
       }
@@ -218,6 +219,12 @@
   });
   $("btn-valider-correction").addEventListener("click", function () {
     var txt = $("correction").value.trim();
+    // Filet de sécurité : si la zone de correction est restée identique à la proposition
+    // mais qu'une version a été tapée dans la remarque, on récupère la remarque comme correction.
+    var candidat = items[pos] ? (items[pos].cre_candidat || "") : "";
+    if ((!txt || txt === candidat) && $("note").value.trim()) {
+      txt = $("note").value.trim();
+    }
     enregistrer("corrige", txt || null);
   });
   $("btn-passer").addEventListener("click", function () { enregistrer("passe", null); });
