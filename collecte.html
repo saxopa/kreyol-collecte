@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Kréyòl gwiyanè — traduction</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="barre-haut">
+  <div class="wrap" style="padding-top:0;padding-bottom:0">
+    <div class="progress"><i id="jauge"></i></div>
+    <div class="ligne-etat">
+      <span class="compteur" id="compteur">…</span>
+      <span class="statut" id="statut"></span>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <!-- Chargement / erreur de démarrage -->
+  <section id="ecran-chargement" class="card">
+    <p style="margin:0">Chargement des phrases…</p>
+  </section>
+
+  <section id="ecran-erreur" class="card" hidden>
+    <h2>Impossible de charger les phrases</h2>
+    <p id="txt-erreur" class="intro"></p>
+    <button type="button" class="btn btn-primaire" onclick="location.reload()">Réessayer</button>
+  </section>
+
+  <!-- Item en cours -->
+  <section id="ecran-item" hidden>
+    <div class="card">
+      <span class="badge" id="categorie" hidden></span>
+      <p class="consigne" id="consigne" hidden></p>
+      <p class="phrase" id="phrase"></p>
+      <p class="contexte" id="contexte" hidden></p>
+    </div>
+
+    <div class="card">
+      <div class="champ" style="margin-bottom:0">
+        <label for="creole">Comment dit-on en créole ?</label>
+        <textarea id="creole" autocomplete="off" autocapitalize="sentences"
+                  spellcheck="false" autofocus></textarea>
+      </div>
+
+      <div class="facultatif">
+        <p class="titre-fac">Si vous voulez (facultatif)</p>
+
+        <div class="champ">
+          <label for="note">Une remarque ?</label>
+          <span class="aide">Par exemple : « on dit aussi… », « ça, c'est plutôt les anciens »</span>
+          <textarea id="note" autocomplete="off"></textarea>
+        </div>
+
+        <div class="champ">
+          <span class="label">Registre</span>
+          <div class="choix" id="choix-registre">
+            <button type="button" class="btn" data-val="courant"  aria-pressed="false">Courant</button>
+            <button type="button" class="btn" data-val="familier" aria-pressed="false">Familier</button>
+            <button type="button" class="btn" data-val="soutenu"  aria-pressed="false">Soutenu</button>
+          </div>
+        </div>
+
+        <div class="champ" style="margin-bottom:0">
+          <span class="label">Vous êtes sûr ?</span>
+          <div class="choix" id="choix-certitude">
+            <button type="button" class="btn" data-val="5" aria-pressed="false">Sûr</button>
+            <button type="button" class="btn" data-val="3" aria-pressed="false">À peu près</button>
+            <button type="button" class="btn" data-val="1" aria-pressed="false">Pas sûr</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn btn-primaire" id="btn-suivant">Suivant</button>
+      <button type="button" class="btn" id="btn-passer">Je ne sais pas / passer</button>
+    </div>
+    <div class="actions-bas">
+      <button type="button" class="btn-lien" id="btn-precedent">← Revenir à la phrase d'avant</button>
+    </div>
+  </section>
+
+  <!-- Fin -->
+  <section id="ecran-fin" class="card fin" hidden>
+    <p class="grand">Mèsi !</p>
+    <h2>Merci beaucoup</h2>
+    <p class="intro" id="txt-fin"></p>
+    <div id="msg-attente" class="msg msg-info" hidden></div>
+    <div class="actions" style="flex-direction:column">
+      <button type="button" class="btn" id="btn-revoir">Revoir mes réponses</button>
+    </div>
+  </section>
+
+  <div class="actions-bas" style="margin-top:2rem">
+    <a class="btn-lien" href="index.html">Quitter</a>
+  </div>
+
+</main>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // --- Participant ---------------------------------------------------------
+
+  var P = null;
+  try { P = JSON.parse(localStorage.getItem("kreyol.participant") || "null"); } catch (e) {}
+  if (!P || !P.id) { location.replace("index.html"); return; }
+
+  var CLE_ITEMS = "kreyol.items";
+  var CLE_REP   = "kreyol.reponses." + P.id;
+  var CLE_FILE  = "kreyol.file." + P.id;   // réponses pas encore parties vers le serveur
+
+  // --- État ----------------------------------------------------------------
+
+  var items    = [];    // toutes les phrases, dans l'ordre
+  var reponses = {};    // item_id -> {creole, note, registre, certitude, passe}
+  var file     = {};    // item_id -> payload en attente d'envoi
+  var idx      = 0;
+  var modifie  = false; // le texte a changé depuis le dernier enregistrement
+
+  var elChargement = document.getElementById("ecran-chargement");
+  var elErreur     = document.getElementById("ecran-erreur");
+  var elItem       = document.getElementById("ecran-item");
+  var elFin        = document.getElementById("ecran-fin");
+  var elStatut     = document.getElementById("statut");
+  var taCreole     = document.getElementById("creole");
+  var taNote       = document.getElementById("note");
+
+  var registre  = null;
+  var certitude = null;
+  var passe     = false;
+
+  // --- Stockage local ------------------------------------------------------
+
+  function lireJSON(cle, defaut) {
+    try { return JSON.parse(localStorage.getItem(cle)) || defaut; }
+    catch (e) { return defaut; }
+  }
+
+  function ecrireJSON(cle, valeur) {
+    try { localStorage.setItem(cle, JSON.stringify(valeur)); } catch (e) {}
+  }
+
+  // --- Accès REST Supabase -------------------------------------------------
+
+  function entetes(extra) {
+    var h = {
+      "apikey": window.SUPA_KEY,
+      "Authorization": "Bearer " + window.SUPA_KEY,
+      "Content-Type": "application/json"
+    };
+    for (var k in extra) h[k] = extra[k];
+    return h;
+  }
+
+  function requete(url, options, ms) {
+    var ctrl = new AbortController();
+    var t = setTimeout(function () { ctrl.abort(); }, ms || 12000);
+    options = options || {};
+    options.signal = ctrl.signal;
+    return fetch(url, options).then(function (r) {
+      clearTimeout(t);
+      if (!r.ok) return r.text().then(function (txt) { throw new Error(r.status + " " + txt); });
+      var c = r.headers.get("content-type") || "";
+      return c.indexOf("json") >= 0 ? r.json() : null;
+    }, function (e) { clearTimeout(t); throw e; });
+  }
+
+  // --- Indicateur d'enregistrement ----------------------------------------
+
+  function statut(etat) {
+    if (etat === "encours")  { elStatut.className = "statut attente"; elStatut.textContent = "enregistrement…"; }
+    else if (etat === "ok")  { elStatut.className = "statut ok";      elStatut.textContent = "enregistré ✓"; }
+    else if (etat === "local"){ elStatut.className = "statut attente"; elStatut.textContent = "gardé sur l'appareil ⏳"; }
+    else                     { elStatut.className = "statut";          elStatut.textContent = ""; }
+  }
+
+  // --- Envoi (upsert) ------------------------------------------------------
+
+  function envoyer(payloads, keepalive) {
+    var url = window.SUPA_URL + "/rest/v1/kreyol_reponse?on_conflict=participant_id,item_id";
+    var opt = {
+      method: "POST",
+      headers: entetes({ "Prefer": "resolution=merge-duplicates,return=minimal" }),
+      body: JSON.stringify(payloads)
+    };
+    // keepalive : laisse la requête finir même si la page se ferme.
+    if (keepalive) { opt.keepalive = true; return fetch(url, opt).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    }); }
+    return requete(url, opt);
+  }
+
+  // Réessaie tout ce qui n'est pas encore parti. Jamais bloquant.
+  function viderFile() {
+    var cles = Object.keys(file);
+    if (!cles.length) return Promise.resolve(false);
+
+    var lot = cles.map(function (k) { return file[k]; });
+    return envoyer(lot).then(function () {
+      cles.forEach(function (k, i) {
+        // Comparaison par référence : une saisie plus récente a pu remplacer
+        // l'entrée pendant l'envoi, il ne faut pas l'effacer.
+        if (file[k] === lot[i]) delete file[k];
+      });
+      ecrireJSON(CLE_FILE, file);
+      if (!Object.keys(file).length) statut("ok");
+      return true;
+    }, function () { return false; });
+  }
+
+  // --- Lecture / écriture des champs --------------------------------------
+
+  function champs() {
+    return {
+      creole: taCreole.value,
+      note: taNote.value,
+      registre: registre,
+      certitude: certitude,
+      passe: passe
+    };
+  }
+
+  function identique(a, b) {
+    return a && b
+      && (a.creole || "") === (b.creole || "")
+      && (a.note || "") === (b.note || "")
+      && (a.registre || null) === (b.registre || null)
+      && (a.certitude || null) === (b.certitude || null)
+      && !!a.passe === !!b.passe;
+  }
+
+  function vide(v) {
+    return !v.creole.trim() && !v.note.trim() && !v.registre && !v.certitude && !v.passe;
+  }
+
+  /**
+   * Enregistre la réponse en cours : d'abord en local (jamais de perte),
+   * puis vers le serveur. Un échec réseau laisse la réponse dans la file.
+   */
+  function enregistrer(options) {
+    options = options || {};
+    var item = items[idx];
+    if (!item) return Promise.resolve();
+
+    var v = champs();
+    var avant = reponses[item.id];
+
+    if (vide(v) && !avant) return Promise.resolve();          // rien à dire : pas de ligne vide en base
+    if (identique(avant, v) && !file[item.id]) return Promise.resolve();
+
+    reponses[item.id] = v;
+    ecrireJSON(CLE_REP, reponses);
+    modifie = false;
+
+    var payload = {
+      participant_id: P.id,
+      item_id: item.id,
+      creole: v.creole.trim(),
+      note: v.note.trim() || null,
+      registre: v.registre,
+      certitude: v.certitude,
+      passe: !!v.passe,
+      updated_at: new Date().toISOString()
+    };
+
+    file[item.id] = payload;
+    ecrireJSON(CLE_FILE, file);
+    statut("encours");
+
+    return envoyer([payload], options.keepalive).then(function () {
+      if (file[item.id] === payload) { delete file[item.id]; ecrireJSON(CLE_FILE, file); }
+      statut(Object.keys(file).length ? "local" : "ok");
+    }, function () {
+      statut("local");   // gardé sur l'appareil, on réessaiera
+    });
+  }
+
+  // --- Affichage -----------------------------------------------------------
+
+  function repondu(item) {
+    var r = reponses[item.id];
+    return !!r && (!!(r.creole || "").trim() || r.passe === true);
+  }
+
+  function nbRepondus() {
+    var n = 0;
+    for (var i = 0; i < items.length; i++) if (repondu(items[i])) n++;
+    return n;
+  }
+
+  function majProgression() {
+    var total = items.length || 1;
+    var faites = nbRepondus();
+    document.getElementById("jauge").style.width = Math.round(faites / total * 100) + "%";
+    document.getElementById("compteur").textContent = (idx >= items.length)
+      ? faites + " / " + items.length + " remplies"
+      : (idx + 1) + " / " + items.length + "  ·  " + faites + " remplies";
+  }
+
+  function marquerChoix(conteneur, valeur) {
+    var b = conteneur.querySelectorAll(".btn");
+    for (var i = 0; i < b.length; i++) {
+      b[i].setAttribute("aria-pressed", String(b[i].dataset.val) === String(valeur) ? "true" : "false");
+    }
+  }
+
+  function texte(el, valeur) {
+    if (valeur) { el.textContent = valeur; el.hidden = false; }
+    else { el.textContent = ""; el.hidden = true; }
+  }
+
+  function afficher() {
+    var item = items[idx];
+    if (!item) { finir(); return; }
+
+    elChargement.hidden = true;
+    elErreur.hidden = true;
+    elFin.hidden = true;
+    elItem.hidden = false;
+
+    texte(document.getElementById("categorie"), item.categorie);
+    texte(document.getElementById("consigne"), item.consigne);
+    texte(document.getElementById("contexte"), item.contexte);
+    document.getElementById("phrase").textContent = item.fr || "";
+    // item.cible_grammaticale n'est jamais affiché : c'est une note interne.
+
+    var r = reponses[item.id] || {};
+    taCreole.value = r.creole || "";
+    taNote.value   = r.note || "";
+    registre  = r.registre || null;
+    certitude = (r.certitude === 0 || r.certitude) ? r.certitude : null;
+    passe     = !!r.passe;
+    marquerChoix(document.getElementById("choix-registre"), registre);
+    marquerChoix(document.getElementById("choix-certitude"), certitude);
+
+    document.getElementById("btn-precedent").disabled = (idx === 0);
+    document.getElementById("btn-suivant").textContent =
+      (idx === items.length - 1) ? "Terminer" : "Suivant";
+
+    modifie = false;
+    majProgression();
+    statut(reponses[item.id] ? (file[item.id] ? "local" : "ok") : "");
+
+    window.scrollTo(0, 0);
+    // Le focus automatique gêne sur mobile (le clavier saute) : seulement sur grand écran.
+    if (window.matchMedia("(min-width: 34rem)").matches) taCreole.focus();
+  }
+
+  function finir() {
+    elItem.hidden = true;
+    elChargement.hidden = true;
+    elFin.hidden = false;
+    statut("");
+    majProgression();
+    document.getElementById("txt-fin").textContent =
+      "Vous avez rempli " + nbRepondus() + " phrases sur " + items.length +
+      ". Vos réponses sont enregistrées, vous pouvez fermer la page.";
+    majFileFin();
+  }
+
+  function majFileFin() {
+    var n = Object.keys(file).length;
+    var el = document.getElementById("msg-attente");
+    if (!n) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = n + " réponse(s) attendent une connexion. Gardez cette page ouverte quelques instants "
+      + "une fois le wifi revenu : l'envoi se fait tout seul.";
+  }
+
+  // --- Navigation ----------------------------------------------------------
+
+  function aller(delta) {
+    enregistrer();                   // volontairement non bloquant : on n'attend pas le réseau
+    var suivant = idx + delta;
+    if (suivant < 0) suivant = 0;
+    if (suivant >= items.length) { idx = items.length; finir(); return; }
+    idx = suivant;
+    afficher();
+  }
+
+  document.getElementById("btn-suivant").addEventListener("click", function () { aller(1); });
+  document.getElementById("btn-precedent").addEventListener("click", function () { aller(-1); });
+
+  document.getElementById("btn-passer").addEventListener("click", function () {
+    passe = true;
+    aller(1);
+  });
+
+  document.getElementById("btn-revoir").addEventListener("click", function () {
+    idx = 0;
+    afficher();
+  });
+
+  // --- Saisie --------------------------------------------------------------
+
+  taCreole.addEventListener("input", function () {
+    modifie = true;
+    if (this.value.trim()) passe = false;   // écrire une réponse annule le « je ne sais pas »
+  });
+  taNote.addEventListener("input", function () { modifie = true; });
+
+  function brancherChoix(id, appliquer) {
+    var conteneur = document.getElementById(id);
+    conteneur.addEventListener("click", function (ev) {
+      var b = ev.target.closest(".btn");
+      if (!b) return;
+      var deja = b.getAttribute("aria-pressed") === "true";
+      appliquer(deja ? null : b.dataset.val);   // recliquer désélectionne : tout est facultatif
+      marquerChoix(conteneur, deja ? null : b.dataset.val);
+      modifie = true;
+      enregistrer();
+    });
+  }
+
+  brancherChoix("choix-registre",  function (v) { registre = v; });
+  brancherChoix("choix-certitude", function (v) { certitude = v === null ? null : parseInt(v, 10); });
+
+  // Ctrl/Cmd + Entrée : passer à la phrase suivante sans lever les mains du clavier.
+  taCreole.addEventListener("keydown", function (ev) {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") { ev.preventDefault(); aller(1); }
+  });
+
+  // --- Filets de sécurité --------------------------------------------------
+
+  setInterval(function () { if (modifie) enregistrer(); }, 5000);
+  setInterval(function () { viderFile().then(majFileFin); }, 20000);
+
+  window.addEventListener("online", function () { viderFile().then(majFileFin); });
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden" && modifie) enregistrer({ keepalive: true });
+  });
+
+  window.addEventListener("pagehide", function () {
+    if (modifie) enregistrer({ keepalive: true });
+  });
+
+  // --- Démarrage -----------------------------------------------------------
+
+  function premierNonRepondu() {
+    for (var i = 0; i < items.length; i++) if (!repondu(items[i])) return i;
+    return items.length;   // tout est fait
+  }
+
+  function demarrer() {
+    // 1. On part du cache local : la page reste utilisable même sans réseau.
+    items    = lireJSON(CLE_ITEMS, []);
+    reponses = lireJSON(CLE_REP, {});
+    file     = lireJSON(CLE_FILE, {});
+
+    var pItems = requete(window.SUPA_URL + "/rest/v1/kreyol_item?select=*&order=id.asc&limit=5000",
+                         { headers: entetes() })
+      .then(function (lignes) {
+        if (lignes && lignes.length) { items = lignes; ecrireJSON(CLE_ITEMS, items); }
+      }, function () { /* on garde le cache */ });
+
+    var pRep = requete(window.SUPA_URL + "/rest/v1/kreyol_reponse?select=*&participant_id=eq."
+                       + encodeURIComponent(P.id) + "&limit=5000", { headers: entetes() })
+      .then(function (lignes) {
+        if (!lignes) return;
+        // Le serveur fait autorité, sauf pour ce qui attend encore d'être envoyé.
+        lignes.forEach(function (r) {
+          if (file[r.item_id]) return;
+          reponses[r.item_id] = {
+            creole: r.creole || "",
+            note: r.note || "",
+            registre: r.registre || null,
+            certitude: (r.certitude === 0 || r.certitude) ? r.certitude : null,
+            passe: !!r.passe
+          };
+        });
+        ecrireJSON(CLE_REP, reponses);
+      }, function () { /* on garde le cache */ });
+
+    Promise.all([pItems, pRep]).then(function () {
+      if (!items.length) {
+        elChargement.hidden = true;
+        elErreur.hidden = false;
+        document.getElementById("txt-erreur").textContent =
+          "Aucune phrase n'a pu être chargée. Vérifiez votre connexion Internet, puis réessayez.";
+        return;
+      }
+      viderFile().then(majFileFin);           // rattrape ce qui traînait de la dernière fois
+      idx = premierNonRepondu();              // reprise automatique au bon endroit
+      if (idx >= items.length) { majProgression(); finir(); }
+      else afficher();
+    });
+  }
+
+  demarrer();
+
+})();
+</script>
+</body>
+</html>

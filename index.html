@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Kréyòl gwiyanè — entrée</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+
+  <h1>Kréyòl gwiyanè</h1>
+  <p class="intro">
+    Nous rassemblons des phrases traduites en créole guyanais pour apprendre la langue à un ordinateur.<br>
+    Vous traduisez des phrases du français vers le créole, à votre rythme, comme vous les diriez vraiment.<br>
+    Vous pouvez fermer la page et revenir plus tard : rien n'est perdu.
+  </p>
+
+  <!-- Reprise : un participant est déjà enregistré sur cet appareil -->
+  <section id="ecran-reprise" class="card" hidden>
+    <h2>Bon retour, <span id="reprise-nom"></span> !</h2>
+    <p class="intro" style="margin-bottom:1rem">Vous êtes connecté avec le code <strong id="reprise-code"></strong>.</p>
+    <a class="btn btn-primaire" href="collecte.html">Continuer la traduction</a>
+    <div class="actions-bas">
+      <button type="button" class="btn-lien" id="btn-autre">Ce n'est pas moi, changer de code</button>
+    </div>
+  </section>
+
+  <!-- Saisie du code -->
+  <section id="ecran-code" class="card" hidden>
+    <form id="form-code" novalidate>
+      <div class="champ">
+        <label for="code">Votre code</label>
+        <span class="aide">Celui qui vous a été donné, par exemple GWIYAN-01</span>
+        <input type="text" id="code" name="code" autocomplete="off" autocapitalize="characters"
+               spellcheck="false" enterkeyhint="go" placeholder="GWIYAN-00">
+      </div>
+      <button type="submit" class="btn btn-primaire" id="btn-entrer">Entrer</button>
+    </form>
+    <div id="msg-code" class="msg msg-erreur" hidden></div>
+  </section>
+
+  <!-- Profil : demandé une seule fois, quand l'âge est encore vide en base -->
+  <section id="ecran-profil" class="card" hidden>
+    <h2>Juste quelques questions, une seule fois</h2>
+    <p class="intro">Cela nous aide à comprendre les différences de créole d'une personne à l'autre.</p>
+
+    <form id="form-profil" novalidate>
+      <div class="champ">
+        <label for="prenom">Votre prénom (ou un surnom)</label>
+        <input type="text" id="prenom" autocomplete="given-name">
+      </div>
+
+      <div class="champ">
+        <label for="age">Votre âge</label>
+        <input type="number" id="age" min="1" max="120" inputmode="numeric" autocomplete="off">
+      </div>
+
+      <div class="champ">
+        <label for="origine">Votre commune ou votre lieu d'origine</label>
+        <span class="aide">Par exemple : Cayenne, Mana, Saint-Laurent…</span>
+        <input type="text" id="origine" autocomplete="off">
+      </div>
+
+      <div class="champ">
+        <span class="label">Le créole est-il votre langue maternelle ?</span>
+        <div class="choix" id="choix-langue">
+          <button type="button" class="btn" data-val="oui" aria-pressed="false">Oui</button>
+          <button type="button" class="btn" data-val="non" aria-pressed="false">Non</button>
+        </div>
+      </div>
+
+      <div class="champ">
+        <label for="annees">Combien d'années avez-vous vécu en Guyane ?</label>
+        <input type="number" id="annees" min="0" max="120" inputmode="numeric" autocomplete="off">
+      </div>
+
+      <button type="submit" class="btn btn-primaire" id="btn-profil">C'est parti</button>
+    </form>
+    <div id="msg-profil" class="msg msg-erreur" hidden></div>
+  </section>
+
+</main>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var CLE_PARTICIPANT = "kreyol.participant";
+
+  var elReprise  = document.getElementById("ecran-reprise");
+  var elCode     = document.getElementById("ecran-code");
+  var elProfil   = document.getElementById("ecran-profil");
+  var msgCode    = document.getElementById("msg-code");
+  var msgProfil  = document.getElementById("msg-profil");
+  var inputCode  = document.getElementById("code");
+  var btnEntrer  = document.getElementById("btn-entrer");
+  var btnProfil  = document.getElementById("btn-profil");
+
+  var participant = null;   // participant en cours de connexion
+  var langueMat   = null;   // oui / non / null
+
+  // --- Accès REST Supabase -------------------------------------------------
+
+  function entetes(extra) {
+    var h = {
+      "apikey": window.SUPA_KEY,
+      "Authorization": "Bearer " + window.SUPA_KEY,
+      "Content-Type": "application/json"
+    };
+    for (var k in extra) h[k] = extra[k];
+    return h;
+  }
+
+  // Timeout explicite : sur un réseau lent, mieux vaut une erreur claire
+  // qu'un bouton figé pendant une minute.
+  function requete(url, options, ms) {
+    var ctrl = new AbortController();
+    var t = setTimeout(function () { ctrl.abort(); }, ms || 12000);
+    options = options || {};
+    options.signal = ctrl.signal;
+    return fetch(url, options).then(function (r) {
+      clearTimeout(t);
+      if (!r.ok) return r.text().then(function (txt) { throw new Error(r.status + " " + txt); });
+      return r.status === 204 ? null : r.json();
+    }, function (e) {
+      clearTimeout(t);
+      throw e;
+    });
+  }
+
+  // --- Écrans --------------------------------------------------------------
+
+  function montrer(section) {
+    elReprise.hidden = section !== elReprise;
+    elCode.hidden    = section !== elCode;
+    elProfil.hidden  = section !== elProfil;
+  }
+
+  function erreur(el, texte) {
+    el.textContent = texte;
+    el.hidden = false;
+  }
+
+  function lireParticipantLocal() {
+    try { return JSON.parse(localStorage.getItem(CLE_PARTICIPANT) || "null"); }
+    catch (e) { return null; }
+  }
+
+  function enregistrerParticipant(p) {
+    localStorage.setItem(CLE_PARTICIPANT, JSON.stringify(p));
+  }
+
+  function entrer(p) {
+    enregistrerParticipant(p);
+    location.href = "collecte.html";
+  }
+
+  // Le profil n'est demandé que si l'âge est encore vide en base.
+  function profilManquant(p) {
+    return p.age === null || p.age === undefined || p.age === "";
+  }
+
+  // --- Démarrage -----------------------------------------------------------
+
+  var dejaLa = lireParticipantLocal();
+  if (dejaLa && dejaLa.id) {
+    document.getElementById("reprise-nom").textContent = dejaLa.prenom || "à vous";
+    document.getElementById("reprise-code").textContent = dejaLa.code || "";
+    montrer(elReprise);
+  } else {
+    montrer(elCode);
+    inputCode.focus();
+  }
+
+  document.getElementById("btn-autre").addEventListener("click", function () {
+    localStorage.removeItem(CLE_PARTICIPANT);
+    montrer(elCode);
+    inputCode.focus();
+  });
+
+  // --- Saisie du code ------------------------------------------------------
+
+  inputCode.addEventListener("input", function () {
+    var pos = inputCode.selectionStart;
+    inputCode.value = inputCode.value.toUpperCase();
+    try { inputCode.setSelectionRange(pos, pos); } catch (e) {}
+  });
+
+  document.getElementById("form-code").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    msgCode.hidden = true;
+
+    var code = inputCode.value.trim().toUpperCase();
+    if (!code) { erreur(msgCode, "Merci d'écrire votre code."); inputCode.focus(); return; }
+
+    btnEntrer.disabled = true;
+    btnEntrer.textContent = "Recherche…";
+
+    var url = window.SUPA_URL + "/rest/v1/kreyol_participant?select=*&code=eq." + encodeURIComponent(code);
+
+    requete(url, { headers: entetes() }).then(function (lignes) {
+      btnEntrer.disabled = false;
+      btnEntrer.textContent = "Entrer";
+
+      if (!lignes || !lignes.length) {
+        erreur(msgCode, "Code inconnu. Vérifiez les lettres et le tiret, ou demandez votre code à la personne qui vous a inscrit.");
+        return;
+      }
+
+      participant = lignes[0];
+      if (profilManquant(participant)) {
+        document.getElementById("prenom").value = participant.prenom || "";
+        document.getElementById("origine").value = participant.origine || "";
+        if (participant.annees_guyane != null) document.getElementById("annees").value = participant.annees_guyane;
+        if (participant.langue_1ere === true) choisirLangue("oui");
+        if (participant.langue_1ere === false) choisirLangue("non");
+        montrer(elProfil);
+        document.getElementById("prenom").focus();
+      } else {
+        entrer(participant);
+      }
+    }, function () {
+      btnEntrer.disabled = false;
+      btnEntrer.textContent = "Entrer";
+
+      // Hors-ligne : si c'est le même code que la dernière fois, on laisse entrer
+      // quand même — la collecte sait travailler sans réseau.
+      var local = lireParticipantLocal();
+      if (local && local.code === code) { entrer(local); return; }
+
+      erreur(msgCode, "Pas de connexion à Internet pour le moment. Vérifiez le wifi ou les données mobiles, puis réessayez.");
+    });
+  });
+
+  // --- Profil --------------------------------------------------------------
+
+  var boutonsLangue = document.querySelectorAll("#choix-langue .btn");
+
+  function choisirLangue(val) {
+    langueMat = val;
+    for (var i = 0; i < boutonsLangue.length; i++) {
+      boutonsLangue[i].setAttribute("aria-pressed", boutonsLangue[i].dataset.val === val ? "true" : "false");
+    }
+  }
+
+  for (var i = 0; i < boutonsLangue.length; i++) {
+    boutonsLangue[i].addEventListener("click", function () {
+      choisirLangue(this.dataset.val);
+    });
+  }
+
+  document.getElementById("form-profil").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    msgProfil.hidden = true;
+
+    var age = parseInt(document.getElementById("age").value, 10);
+    if (isNaN(age) || age < 1 || age > 120) {
+      erreur(msgProfil, "Merci d'indiquer votre âge (en chiffres).");
+      document.getElementById("age").focus();
+      return;
+    }
+
+    var annees = parseInt(document.getElementById("annees").value, 10);
+
+    var maj = {
+      prenom: document.getElementById("prenom").value.trim() || null,
+      age: age,
+      origine: document.getElementById("origine").value.trim() || null,
+      langue_1ere: langueMat === null ? null : (langueMat === "oui"),
+      annees_guyane: isNaN(annees) ? null : annees
+    };
+
+    btnProfil.disabled = true;
+    btnProfil.textContent = "Enregistrement…";
+
+    var url = window.SUPA_URL + "/rest/v1/kreyol_participant?id=eq." + encodeURIComponent(participant.id);
+
+    requete(url, {
+      method: "PATCH",
+      headers: entetes({ "Prefer": "return=representation" }),
+      body: JSON.stringify(maj)
+    }).then(function (lignes) {
+      entrer(lignes && lignes.length ? lignes[0] : Object.assign({}, participant, maj));
+    }, function () {
+      btnProfil.disabled = false;
+      btnProfil.textContent = "C'est parti";
+      erreur(msgProfil, "Impossible d'enregistrer pour l'instant (connexion). Réessayez dans un instant.");
+    });
+  });
+
+})();
+</script>
+</body>
+</html>
