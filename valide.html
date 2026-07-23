@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Kréyòl gwiyanè — validation</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+
+  <h1>Kréyòl gwiyanè — vérification</h1>
+
+  <!-- Écran d'entrée par code (identique à la collecte) -->
+  <section id="ecran-code" class="card">
+    <p class="intro">
+      On a préparé des phrases en créole avec l'ordinateur.<br>
+      Ton travail : dire si c'est <strong>bon</strong>, <strong>faux</strong>, ou le
+      <strong>corriger</strong>. Tu peux fermer et revenir : rien n'est perdu.
+    </p>
+    <label for="code">Ton code</label>
+    <input id="code" type="text" autocapitalize="characters" autocomplete="off"
+           placeholder="GWIYAN-01" inputmode="text">
+    <button type="button" class="btn btn-primaire" id="btn-entrer">Entrer</button>
+    <p id="code-erreur" class="erreur" hidden></p>
+  </section>
+
+  <!-- Écran de travail -->
+  <section id="ecran-travail" class="card" hidden>
+    <div class="progression">
+      <div class="barre"><div id="barre-remplie"></div></div>
+      <span id="compteur">0 / 0</span>
+    </div>
+
+    <p class="consigne" id="domaine"></p>
+    <p class="phrase" id="fr"></p>
+
+    <div class="candidat">
+      <span class="etiquette">proposition en créole</span>
+      <p class="phrase-cre" id="cre"></p>
+    </div>
+
+    <p class="incertitude" id="incertitude" hidden></p>
+
+    <!-- Verdicts -->
+    <div id="boutons-verdict" class="verdicts">
+      <button type="button" class="btn btn-bon"     data-v="bon">✅ C'est bon</button>
+      <button type="button" class="btn btn-corrige" data-v="corrige">✏️ Corriger</button>
+      <button type="button" class="btn btn-faux"    data-v="faux">❌ C'est faux</button>
+    </div>
+
+    <!-- Zone de correction (cachée par défaut) -->
+    <div id="zone-correction" hidden>
+      <label for="correction">Écris la bonne version en créole :</label>
+      <textarea id="correction" rows="2"></textarea>
+      <button type="button" class="btn btn-primaire" id="btn-valider-correction">Valider ma correction</button>
+    </div>
+
+    <label for="note" class="label-note">Une remarque ? (facultatif)</label>
+    <textarea id="note" rows="1" placeholder="ex. on dit aussi…, ça c'est plutôt les anciens"></textarea>
+
+    <div class="actions-bas">
+      <button type="button" class="btn-lien" id="btn-precedent">← Revenir en arrière</button>
+      <button type="button" class="btn-lien" id="btn-passer">Passer →</button>
+      <span id="etat-enreg" class="etat-enreg"></span>
+    </div>
+  </section>
+
+  <!-- Fin -->
+  <section id="ecran-fin" class="card" hidden>
+    <h2>Mèsi anpil ! 🙏</h2>
+    <p class="intro">Tu as tout passé en revue. Ton travail est précieux — chaque correction
+      aide vraiment. Tu peux fermer la page.</p>
+  </section>
+
+</main>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var P = null;                 // participant
+  var items = [], verdicts = {}, pos = 0;
+
+  try { P = JSON.parse(localStorage.getItem("kreyol.participant") || "null"); } catch (e) {}
+
+  function entetes(extra) {
+    var h = { "apikey": window.SUPA_KEY, "Authorization": "Bearer " + window.SUPA_KEY,
+              "Content-Type": "application/json" };
+    for (var k in (extra || {})) h[k] = extra[k];
+    return h;
+  }
+  function requete(url, options) {
+    return fetch(url, options).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      var t = r.headers.get("content-type") || "";
+      return t.indexOf("application/json") >= 0 ? r.json() : null;
+    });
+  }
+
+  // --- Entrée par code -------------------------------------------------------
+  function entrer() {
+    var code = $("code").value.trim().toUpperCase();
+    if (!code) return;
+    $("code-erreur").hidden = true;
+    requete(window.SUPA_URL + "/rest/v1/kreyol_participant?select=*&code=eq."
+            + encodeURIComponent(code), { headers: entetes() })
+      .then(function (rows) {
+        if (!rows || !rows.length) {
+          $("code-erreur").textContent = "Code inconnu. Vérifie avec Alexis.";
+          $("code-erreur").hidden = false;
+          return;
+        }
+        P = rows[0];
+        localStorage.setItem("kreyol.participant", JSON.stringify(P));
+        demarrer();
+      })
+      .catch(function () {
+        $("code-erreur").textContent = "Pas de connexion. Réessaie.";
+        $("code-erreur").hidden = false;
+      });
+  }
+
+  // --- Chargement des candidats + verdicts déjà donnés -----------------------
+  function demarrer() {
+    $("ecran-code").hidden = true;
+    var pC = requete(window.SUPA_URL + "/rest/v1/kreyol_candidat?select=*&order=id.asc&limit=5000",
+                     { headers: entetes() });
+    var pV = requete(window.SUPA_URL + "/rest/v1/kreyol_verdict?select=*&participant_id=eq."
+                     + encodeURIComponent(P.id) + "&limit=5000", { headers: entetes() });
+    Promise.all([pC, pV]).then(function (res) {
+      items = res[0] || [];
+      (res[1] || []).forEach(function (v) { verdicts[v.candidat_id] = v; });
+      // reprendre au premier non traité
+      pos = 0;
+      while (pos < items.length && verdicts[items[pos].id]) pos++;
+      if (pos >= items.length) pos = Math.max(0, items.length - 1);
+      $("ecran-travail").hidden = false;
+      afficher();
+    });
+  }
+
+  // --- Affichage d'un candidat ----------------------------------------------
+  function afficher() {
+    if (pos >= items.length) { fin(); return; }
+    var it = items[pos];
+    $("domaine").textContent = (it.domaine || "") + (it.type === "conversation" ? " · conversation" : "");
+    $("fr").textContent = it.fr;
+    $("cre").textContent = it.cre_candidat;
+    if (it.incertitudes && it.incertitudes !== "[]" && it.incertitudes !== "null") {
+      $("incertitude").textContent = "⚠️ à vérifier : " + it.incertitudes.replace(/[\[\]"]/g, "");
+      $("incertitude").hidden = false;
+    } else { $("incertitude").hidden = true; }
+
+    // remettre l'état selon un éventuel verdict déjà donné
+    var v = verdicts[it.id];
+    $("note").value = (v && v.note) || "";
+    $("correction").value = (v && v.cre_corrige) || it.cre_candidat;
+    $("zone-correction").hidden = true;
+
+    var fait = Object.keys(verdicts).length;
+    $("compteur").textContent = fait + " / " + items.length;
+    $("barre-remplie").style.width = (items.length ? (100 * fait / items.length) : 0) + "%";
+    $("etat-enreg").textContent = v ? ("déjà : " + v.verdict) : "";
+  }
+
+  // --- Enregistrement d'un verdict ------------------------------------------
+  function enregistrer(verdict, cre_corrige) {
+    var it = items[pos];
+    var payload = {
+      participant_id: P.id, candidat_id: it.id, verdict: verdict,
+      cre_corrige: cre_corrige || null, note: $("note").value.trim() || null
+    };
+    verdicts[it.id] = payload;               // optimiste : on avance sans attendre le réseau
+    $("etat-enreg").textContent = "enregistré ✓";
+    var url = window.SUPA_URL + "/rest/v1/kreyol_verdict?on_conflict=participant_id,candidat_id";
+    requete(url, { method: "POST",
+      headers: entetes({ "Prefer": "resolution=merge-duplicates,return=minimal" }),
+      body: JSON.stringify(payload) }).catch(function () {
+        // en cas d'échec réseau : on garde en local pour renvoyer plus tard
+        var f = JSON.parse(localStorage.getItem("kreyol.verdicts.attente") || "[]");
+        f.push(payload); localStorage.setItem("kreyol.verdicts.attente", JSON.stringify(f));
+      });
+    avancer();
+  }
+
+  function avancer() { pos++; if (pos >= items.length) fin(); else afficher(); }
+  function fin() { $("ecran-travail").hidden = true; $("ecran-fin").hidden = false; }
+
+  // --- Renvoi des verdicts restés en attente (reconnexion) -------------------
+  function renvoyerAttente() {
+    var f = JSON.parse(localStorage.getItem("kreyol.verdicts.attente") || "[]");
+    if (!f.length) return;
+    var url = window.SUPA_URL + "/rest/v1/kreyol_verdict?on_conflict=participant_id,candidat_id";
+    requete(url, { method: "POST",
+      headers: entetes({ "Prefer": "resolution=merge-duplicates,return=minimal" }),
+      body: JSON.stringify(f) })
+      .then(function () { localStorage.removeItem("kreyol.verdicts.attente"); })
+      .catch(function () {});
+  }
+
+  // --- Câblage ---------------------------------------------------------------
+  $("btn-entrer").addEventListener("click", entrer);
+  $("code").addEventListener("keydown", function (e) { if (e.key === "Enter") entrer(); });
+
+  document.querySelectorAll("#boutons-verdict .btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var v = b.getAttribute("data-v");
+      if (v === "corrige") {
+        $("zone-correction").hidden = false;
+        $("correction").focus();
+      } else {
+        enregistrer(v, null);
+      }
+    });
+  });
+  $("btn-valider-correction").addEventListener("click", function () {
+    var txt = $("correction").value.trim();
+    enregistrer("corrige", txt || null);
+  });
+  $("btn-passer").addEventListener("click", function () { enregistrer("passe", null); });
+  $("btn-precedent").addEventListener("click", function () {
+    if (pos > 0) { pos--; afficher(); }
+  });
+
+  // --- Démarrage -------------------------------------------------------------
+  if (P) { renvoyerAttente(); demarrer(); }
+})();
+</script>
+</body>
+</html>
